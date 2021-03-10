@@ -35,11 +35,11 @@ impl<'a> From<&'a [u8]> for rustls_slice_bytes<'a> {
 
 #[test]
 fn test_rustls_slice_bytes() {
-    let bytes = "abcd".as_bytes();
-    let rsb: rustls_slice_bytes = bytes.into();
+    let bytes = b"abcd";
+    let rsb: rustls_slice_bytes = bytes.as_ref().into();
     unsafe {
-        assert_eq!(*rsb.data, 'a' as u8);
-        assert_eq!(*rsb.data.offset(3), 'd' as u8);
+        assert_eq!(*rsb.data, b'a');
+        assert_eq!(*rsb.data.offset(3), b'd');
         assert_eq!(rsb.len, 4);
     }
 }
@@ -58,11 +58,11 @@ fn test_rustls_slice_bytes() {
 /// Functions that receive one of these must not call its methods beyond the
 /// allowed lifetime.
 pub struct rustls_slice_slice_bytes<'a> {
-    pub inner: &'a [&'a [u8]],
+    pub(crate) inner: &'a [&'a [u8]],
 }
 
-/// Retrieve the nth element from the input slice of slices. If the input
-/// pointer is NULL, returns 0.
+/// Return the length of the outer slice. If the input pointer is NULL,
+/// returns 0.
 #[no_mangle]
 pub extern "C" fn rustls_slice_slice_bytes_len(input: *const rustls_slice_slice_bytes) -> size_t {
     unsafe {
@@ -105,7 +105,7 @@ pub extern "C" fn rustls_slice_slice_bytes_get<'a>(
 
 #[test]
 fn test_rustls_slice_slice_bytes() {
-    let many_bytes = vec!["abcd".as_bytes(), "".as_bytes(), "xyz".as_bytes()];
+    let many_bytes: Vec<&[u8]> = vec![b"abcd", b"", b"xyz"];
     let rssb = rustls_slice_slice_bytes { inner: &many_bytes };
 
     assert_eq!(rustls_slice_slice_bytes_len(&rssb), 3);
@@ -118,16 +118,10 @@ fn test_rustls_slice_slice_bytes() {
     assert_eq!(rustls_slice_slice_bytes_get(&rssb, 3).data, null());
 
     unsafe {
-        assert_eq!(*rustls_slice_slice_bytes_get(&rssb, 0).data, 'a' as u8);
-        assert_eq!(
-            *rustls_slice_slice_bytes_get(&rssb, 0).data.offset(3),
-            'd' as u8
-        );
-        assert_eq!(*rustls_slice_slice_bytes_get(&rssb, 2).data, 'x' as u8);
-        assert_eq!(
-            *rustls_slice_slice_bytes_get(&rssb, 2).data.offset(2),
-            'z' as u8
-        );
+        assert_eq!(*rustls_slice_slice_bytes_get(&rssb, 0).data, b'a');
+        assert_eq!(*rustls_slice_slice_bytes_get(&rssb, 0).data.offset(3), b'd');
+        assert_eq!(*rustls_slice_slice_bytes_get(&rssb, 2).data, b'x');
+        assert_eq!(*rustls_slice_slice_bytes_get(&rssb, 2).data.offset(2), b'z');
     }
 }
 
@@ -203,11 +197,11 @@ fn test_rustls_str_rejects_nul() {
 /// Functions that receive one of these must not call its methods beyond the
 /// allowed lifetime.
 pub struct rustls_slice_str<'a> {
-    pub inner: &'a [&'a str],
+    pub(crate) inner: &'a [&'a str],
 }
 
-/// Retrieve the nth element from the input slice of slices. If the input
-/// pointer is NULL, returns 0.
+/// Return the length of the outer slice. If the input pointer is NULL,
+/// returns 0.
 #[no_mangle]
 pub extern "C" fn rustls_slice_str_len(input: *const rustls_slice_str) -> size_t {
     unsafe {
@@ -218,7 +212,7 @@ pub extern "C" fn rustls_slice_str_len(input: *const rustls_slice_str) -> size_t
     }
 }
 
-/// Retrieve the nth element from the input slice of slices. If the input
+/// Retrieve the nth element from the input slice of `&str`s. If the input
 /// pointer is NULL, or n is greater than the length of the
 /// rustls_slice_str, returns rustls_str{NULL, 0}.
 #[no_mangle]

@@ -117,6 +117,12 @@ typedef struct rustls_client_config_builder rustls_client_config_builder;
 typedef struct rustls_client_session rustls_client_session;
 
 /**
+ * Currently just a placeholder with no accessors yet.
+ * https://docs.rs/rustls/0.19.0/rustls/struct.RootCertStore.html
+ */
+typedef struct rustls_root_cert_store rustls_root_cert_store;
+
+/**
  * A server config that is done being constructed and is now read-only.
  * Under the hood, this object corresponds to an Arc<ServerConfig>.
  * https://docs.rs/rustls/0.19.0/rustls/struct.ServerConfig.html
@@ -173,9 +179,28 @@ typedef struct rustls_slice_slice_bytes rustls_slice_slice_bytes;
 typedef struct rustls_slice_str rustls_slice_str;
 
 /**
- * Any context information the callback will receive when invoked.
+ * User-provided input to a custom certificate verifier callback. See
+ * rustls_client_config_builder_dangerous_set_certificate_verifier().
  */
-typedef void *rustls_supported_ciphersuite_userdata;
+typedef void *rustls_verify_server_cert_user_data;
+
+/**
+ * A read-only view on a Rust byte slice.
+ *
+ * This is used to pass data from crustls to callback functions provided
+ * by the user of the API.
+ * `len` indicates the number of bytes than can be safely read.
+ *
+ * The memory exposed is available as specified by the function
+ * using this in its signature. For instance, when this is a parameter to a
+ * callback, the lifetime will usually be the duration of the callback.
+ * Functions that receive one of these must not dereference the data pointer
+ * beyond the allowed lifetime.
+ */
+typedef struct rustls_slice_bytes {
+  const uint8_t *data;
+  size_t len;
+} rustls_slice_bytes;
 
 /**
  * A read-only view on a Rust `&str`. The contents are guaranteed to be valid
@@ -196,6 +221,25 @@ typedef struct rustls_str {
 } rustls_str;
 
 /**
+ * Input to a custom certificate verifier callback. See
+ * rustls_client_config_builder_dangerous_set_certificate_verifier().
+ */
+typedef struct rustls_verify_server_cert_params {
+  struct rustls_slice_bytes end_entity_cert_der;
+  const struct rustls_slice_slice_bytes *intermediate_certs_der;
+  const struct rustls_root_cert_store *roots;
+  struct rustls_str dns_name;
+  struct rustls_slice_bytes ocsp_response;
+} rustls_verify_server_cert_params;
+
+typedef enum rustls_result (*rustls_verify_server_cert_callback)(rustls_verify_server_cert_user_data userdata, const struct rustls_verify_server_cert_params *params);
+
+/**
+ * Any context information the callback will receive when invoked.
+ */
+typedef void *rustls_supported_ciphersuite_userdata;
+
+/**
  * Prototype of a callback that receives numerical identifier and name of
  * a cipher suite supported by rustls.
  * `userdata` will be supplied as provided when registering the callback.
@@ -205,24 +249,6 @@ typedef struct rustls_str {
  * NOTE: the passed in `name` is only availabe during the callback invocation.
  */
 typedef void (*rustls_supported_ciphersuite_callback)(rustls_supported_ciphersuite_userdata userdata, unsigned short id, const struct rustls_str *name);
-
-/**
- * A read-only view on a Rust byte slice.
- *
- * This is used to pass data from crustls to callback functions provided
- * by the user of the API.
- * `len` indicates the number of bytes than can be safely read.
- *
- * The memory exposed is available as specified by the function
- * using this in its signature. For instance, when this is a parameter to a
- * callback, the lifetime will usually be the duration of the callback.
- * Functions that receive one of these must not dereference the data pointer
- * beyond the allowed lifetime.
- */
-typedef struct rustls_slice_bytes {
-  const uint8_t *data;
-  size_t len;
-} rustls_slice_bytes;
 
 /**
  * Any context information the callback will receive when invoked.
@@ -340,6 +366,43 @@ struct rustls_client_config_builder *rustls_client_config_builder_new(void);
 const struct rustls_client_config *rustls_client_config_builder_build(struct rustls_client_config_builder *builder);
 
 /**
+ * Set a custom server certificate verifier.
+ *
+ * The userdata pointer must stay valid until (a) all sessions created with this
+ * config have been freed, and (b) the config itself has been freed.
+ * The callback must not capture any of the pointers in its
+ * rustls_verify_server_cert_params.
+ *
+ * The callback must be safe to call on any thread at any time, including
+ * multiple concurrent calls. So, for instance, if the callback mutates
+ * userdata (or other shared state), it must use synchronization primitives
+ * to make such mutation safe.
+ *
+ * The callback receives certificate chain information as raw bytes.
+ * Currently this library offers no functions for C code to parse the
+ * certificates, so you'll need to bring your own certificate parsing library
+ * if you need to parse them.
+ *
+ * If you intend to write a verifier that accepts all certificates, be aware
+ * that special measures are required for IP addresses. Rustls currently
+ * (0.19.0) doesn't support building a ClientSession with an IP address
+ * (because it's not a valid DNSNameRef). One workaround is to detect IP
+ * addresses and rewrite them to `example.invalid`, and _also_ to disable
+ * SNI via rustls_client_config_builder_set_enable_sni (IP addresses don't
+ * need SNI).
+ *
+ * If the custom verifier accepts the certificate, it should return
+ * RUSTLS_RESULT_OK. Otherwise, it may return any other rustls_result error.
+ * Feel free to use an appropriate error from the RUSTLS_RESULT_CERT_*
+ * section.
+ *
+ * https://docs.rs/rustls/0.19.0/rustls/struct.DangerousClientConfig.html#method.set_certificate_verifier
+ */
+void rustls_client_config_builder_dangerous_set_certificate_verifier(struct rustls_client_config_builder *config,
+                                                                     rustls_verify_server_cert_callback callback,
+                                                                     rustls_verify_server_cert_user_data userdata);
+
+/**
  * Add certificates from platform's native root store, using
  * https://github.com/ctz/rustls-native-certs#readme.
  */
@@ -351,6 +414,13 @@ enum rustls_result rustls_client_config_builder_load_native_roots(struct rustls_
  */
 enum rustls_result rustls_client_config_builder_load_roots_from_file(struct rustls_client_config_builder *config,
                                                                      const char *filename);
+
+/**
+ * Enable or disable SNI.
+ * https://docs.rs/rustls/0.19.0/rustls/struct.ClientConfig.html#structfield.enable_sni
+ */
+void rustls_client_config_builder_set_enable_sni(struct rustls_client_config_builder *config,
+                                                 bool enable);
 
 /**
  * "Free" a client_config previously returned from
@@ -413,6 +483,12 @@ enum rustls_result rustls_client_session_write(struct rustls_client_session *ses
  * available have been read, but more bytes may become available after
  * subsequent calls to rustls_client_session_read_tls and
  * rustls_client_session_process_new_packets."
+ *
+ * Subtle note: Even though this function only writes to `buf` and does not
+ * read from it, the memory in `buf` must be initialized before the call (for
+ * Rust-internal reasons). Initializing a buffer once and then using it
+ * multiple times without zeroizing before each call is fine.
+ *
  * https://docs.rs/rustls/0.19.0/rustls/struct.ClientSession.html#method.read
  */
 enum rustls_result rustls_client_session_read(struct rustls_client_session *session,
@@ -439,6 +515,12 @@ enum rustls_result rustls_client_session_read_tls(struct rustls_client_session *
  * Write up to `count` TLS bytes from the ClientSession into `buf`. Those
  * bytes should then be written to a socket. On success, store the number of
  * bytes actually written in *out_n (this maybe less than `count`).
+ *
+ * Subtle note: Even though this function only writes to `buf` and does not
+ * read from it, the memory in `buf` must be initialized before the call (for
+ * Rust-internal reasons). Initializing a buffer once and then using it
+ * multiple times without zeroizing before each call is fine.
+ *
  * https://docs.rs/rustls/0.19.0/rustls/trait.Session.html#tymethod.write_tls
  */
 enum rustls_result rustls_client_session_write_tls(struct rustls_client_session *session,
@@ -492,8 +574,8 @@ void rustls_error(enum rustls_result result, char *buf, size_t len, size_t *out_
 bool rustls_result_is_cert_error(enum rustls_result result);
 
 /**
- * Retrieve the nth element from the input slice of slices. If the input
- * pointer is NULL, returns 0.
+ * Return the length of the outer slice. If the input pointer is NULL,
+ * returns 0.
  */
 size_t rustls_slice_slice_bytes_len(const struct rustls_slice_slice_bytes *input);
 
@@ -506,13 +588,13 @@ struct rustls_slice_bytes rustls_slice_slice_bytes_get(const struct rustls_slice
                                                        size_t n);
 
 /**
- * Retrieve the nth element from the input slice of slices. If the input
- * pointer is NULL, returns 0.
+ * Return the length of the outer slice. If the input pointer is NULL,
+ * returns 0.
  */
 size_t rustls_slice_str_len(const struct rustls_slice_str *input);
 
 /**
- * Retrieve the nth element from the input slice of slices. If the input
+ * Retrieve the nth element from the input slice of `&str`s. If the input
  * pointer is NULL, or n is greater than the length of the
  * rustls_slice_str, returns rustls_str{NULL, 0}.
  */
@@ -682,6 +764,12 @@ enum rustls_result rustls_server_session_write(struct rustls_server_session *ses
  * available have been read, but more bytes may become available after
  * subsequent calls to rustls_server_session_read_tls and
  * rustls_server_session_process_new_packets."
+ *
+ * Subtle note: Even though this function only writes to `buf` and does not
+ * read from it, the memory in `buf` must be initialized before the call (for
+ * Rust-internal reasons). Initializing a buffer once and then using it
+ * multiple times without zeroizing before each call is fine.
+ *
  * https://docs.rs/rustls/0.19.0/rustls/struct.ServerSession.html#method.read
  */
 enum rustls_result rustls_server_session_read(struct rustls_server_session *session,
@@ -708,6 +796,12 @@ enum rustls_result rustls_server_session_read_tls(struct rustls_server_session *
  * Write up to `count` TLS bytes from the ServerSession into `buf`. Those
  * bytes should then be written to a socket. On success, store the number of
  * bytes actually written in *out_n (this maybe less than `count`).
+ *
+ * Subtle note: Even though this function only writes to `buf` and does not
+ * read from it, the memory in `buf` must be initialized before the call (for
+ * Rust-internal reasons). Initializing a buffer once and then using it
+ * multiple times without zeroizing before each call is fine.
+ *
  * https://docs.rs/rustls/0.19.0/rustls/trait.Session.html#tymethod.write_tls
  */
 enum rustls_result rustls_server_session_write_tls(struct rustls_server_session *session,
